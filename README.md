@@ -157,7 +157,8 @@ Conversation mode requires `title` and `question`, rejects all PR fields, and
 does not need GitHub or `gh`. `proposal`, `consequence`, and `recommendation`
 are optional strings. `context` must be a string-to-string map whose canonical
 UTF-8 JSON is at most 2048 bytes. `receipts` is optional and defaults to none;
-when present it contains one to five lowercase ASCII words.
+an explicit empty list is equivalent to omission, while non-empty lists contain
+at most five lowercase ASCII words.
 
 Every other eligible text reply is a question. A configured whole-message
 receipt is delivery for this immutable thread, not authority to act. The owning

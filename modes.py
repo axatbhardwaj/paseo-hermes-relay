@@ -46,14 +46,14 @@ def _validate_context(context):
 def _validate_receipts(receipts):
     if (
         not isinstance(receipts, list)
-        or not 1 <= len(receipts) <= 5
+        or len(receipts) > 5
         or any(
             not isinstance(word, str) or RECEIPT_PATTERN.fullmatch(word) is None
             for word in receipts
         )
     ):
         raise ValueError(
-            "receipts must contain one to five lowercase ASCII words"
+            "receipts must contain zero to five lowercase ASCII words"
         )
 
 

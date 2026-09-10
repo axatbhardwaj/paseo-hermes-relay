@@ -1,5 +1,6 @@
 import asyncio
 import importlib.util
+import io
 import json
 import os
 import sys
@@ -47,6 +48,11 @@ class FakeGatewayTelegram:
         self.messages.append((chat_id, text, reply_to))
 
 
+class ConfirmingHermes:
+    async def send(self, target, body):
+        return "generic-alert"
+
+
 class FailingPaseo:
     def __init__(self, module):
         self.module = module
@@ -84,7 +90,7 @@ class CurrentGithub:
 
 
 class PluginRegistrationTests(unittest.TestCase):
-    def test_registered_hook_routes_a_generic_conversation_without_github(self):
+    def test_explicit_empty_receipts_open_and_route_only_as_questions(self):
         module = load_plugin()
         with tempfile.TemporaryDirectory() as tmp:
             hermes_home = Path(tmp) / ".hermes"
@@ -102,32 +108,29 @@ class PluginRegistrationTests(unittest.TestCase):
                 encoding="utf-8",
             )
             config_path.chmod(0o600)
-            context = json.dumps(
-                {
-                    "context": {"ticket": "ENG-142"},
-                    "receipts": [],
-                    "title": "Queue diagnosis",
-                },
-                sort_keys=True,
-                separators=(",", ":"),
+            request_path = Path(tmp) / "conversation.json"
+            request_path.write_text(
+                json.dumps(
+                    {
+                        "decision_id": "generic-hook",
+                        "owner_agent_id": "agent-owner",
+                        "server_id": "server-vps",
+                        "mode": "conversation",
+                        "title": "Queue diagnosis",
+                        "question": "Which trace is missing?",
+                        "receipts": [],
+                        "context": {"ticket": "ENG-142"},
+                    }
+                ),
+                encoding="utf-8",
             )
-            store = module.Storage(data_dir / "relay.sqlite3")
-            store.open_decision(
-                decision_id="generic-hook",
-                owner_agent_id="agent-owner",
-                server_id="server-vps",
-                repository="",
-                pr_number=0,
-                head_sha="",
-                base_sha="",
-                proposal_digest="c" * 64,
-                mode="conversation",
-                context=context,
+            module.cli_main(
+                ["open", "--request-file", str(request_path)],
+                data_dir=data_dir,
+                sender=ConfirmingHermes(),
+                telegram_target="telegram:owner-chat",
+                output=io.StringIO(),
             )
-            store.attach_anchor(
-                "generic-hook", "telegram", "owner-chat", "generic-alert"
-            )
-            store.close()
             runtime_context = FakeContext()
 
             with patch.dict(
@@ -145,7 +148,7 @@ class PluginRegistrationTests(unittest.TestCase):
                     user_id="owner-user",
                     chat_type="dm",
                 ),
-                text="Show me the missing trace.",
+                text="approve",
                 message_id="generic-reply",
                 reply_to_message_id="generic-alert",
                 raw_message=SimpleNamespace(from_user=SimpleNamespace(is_bot=False)),
@@ -166,7 +169,13 @@ class PluginRegistrationTests(unittest.TestCase):
                 )
                 self.assertEqual(len(paseo.prompts), 1)
                 self.assertIn("mode=conversation", paseo.prompts[0][1])
+                self.assertIn("kind=question", paseo.prompts[0][1])
+                self.assertNotIn("driver_must_revalidate", paseo.prompts[0][1])
                 self.assertNotIn("repository=", paseo.prompts[0][1])
+                decision = runtime.store.get_decision("generic-hook")
+                self.assertEqual(
+                    json.loads(decision["context"])["receipts"], []
+                )
             finally:
                 runtime.store.close()
 

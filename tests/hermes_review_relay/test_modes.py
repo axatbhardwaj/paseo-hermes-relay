@@ -113,7 +113,6 @@ class ModeRequestTests(unittest.IsolatedAsyncioTestCase):
     async def test_conversation_receipts_are_bounded_lowercase_words(self):
         invalid = (
             "approve",
-            [],
             ["two words"],
             ["Approve"],
             ["ok1"],

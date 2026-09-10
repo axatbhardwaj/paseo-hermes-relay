@@ -25,7 +25,8 @@ Each immutable thread has one explicit mode:
   map, and zero to five opt-in receipt words. It never invokes GitHub.
 
 Conversation receipts default to none. Configured receipts are lowercase ASCII
-single words and are delivery receipts for the exact immutable thread only.
+single words and are delivery receipts for the exact immutable thread only. An
+explicit empty receipt list is non-authorizing and equivalent to omission.
 Every forwarded receipt says `driver_must_revalidate=true`; the persistent
 owner remains responsible for authority, context, and current-state validation
 before acting. Questions never authorize action.
