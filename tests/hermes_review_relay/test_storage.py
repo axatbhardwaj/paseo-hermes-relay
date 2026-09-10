@@ -13,6 +13,68 @@ from threading import Barrier
 ROOT = Path(__file__).resolve().parents[2]
 PLUGIN_ROOT = ROOT
 
+V0_1_SCHEMA = """
+CREATE TABLE IF NOT EXISTS decisions (
+    decision_id TEXT PRIMARY KEY,
+    owner_agent_id TEXT NOT NULL,
+    server_id TEXT NOT NULL,
+    repository TEXT NOT NULL,
+    pr_number INTEGER NOT NULL,
+    head_sha TEXT NOT NULL,
+    base_sha TEXT NOT NULL,
+    proposal_digest TEXT NOT NULL,
+    demo INTEGER NOT NULL DEFAULT 0 CHECK (demo IN (0, 1)),
+    status TEXT NOT NULL DEFAULT 'open'
+        CHECK (status IN ('open', 'superseded', 'closed', 'blocked', 'uncertain')),
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+CREATE TABLE IF NOT EXISTS anchors (
+    platform TEXT NOT NULL,
+    chat_id TEXT NOT NULL,
+    message_id TEXT NOT NULL,
+    decision_id TEXT NOT NULL REFERENCES decisions(decision_id),
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    PRIMARY KEY (platform, chat_id, message_id)
+);
+CREATE TABLE IF NOT EXISTS inbound_receipts (
+    platform TEXT NOT NULL,
+    chat_id TEXT NOT NULL,
+    message_id TEXT NOT NULL,
+    decision_id TEXT NOT NULL REFERENCES decisions(decision_id),
+    sender_id TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK (kind IN ('question', 'decision')),
+    body TEXT NOT NULL,
+    owner_token TEXT,
+    forward_status TEXT NOT NULL DEFAULT 'queued'
+        CHECK (forward_status IN ('queued', 'forwarded', 'refused', 'failed', 'uncertain')),
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    PRIMARY KEY (platform, chat_id, message_id)
+);
+CREATE TABLE IF NOT EXISTS outbound_attempts (
+    attempt_id TEXT PRIMARY KEY,
+    decision_id TEXT NOT NULL REFERENCES decisions(decision_id),
+    kind TEXT NOT NULL CHECK (kind IN ('alert', 'answer')),
+    body TEXT NOT NULL,
+    state TEXT NOT NULL DEFAULT 'pending'
+        CHECK (state IN ('pending', 'sent', 'failed', 'uncertain')),
+    message_id TEXT,
+    retry_of TEXT REFERENCES outbound_attempts(attempt_id),
+    owner_token TEXT,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+CREATE TRIGGER IF NOT EXISTS decisions_identity_is_immutable
+BEFORE UPDATE OF
+    decision_id, owner_agent_id, server_id, repository, pr_number,
+    head_sha, base_sha, proposal_digest, demo
+ON decisions
+BEGIN
+    SELECT RAISE(ABORT, 'decision identity is immutable');
+END;
+"""
+
 
 def load_plugin():
     spec = importlib.util.spec_from_file_location(
@@ -268,6 +330,64 @@ class StorageTests(unittest.TestCase):
         self.assertEqual(self.store.path.stat().st_mode & 0o777, 0o600)
         journal_mode = self.store.connection.execute("PRAGMA journal_mode").fetchone()[0]
         self.assertEqual(journal_mode.lower(), "wal")
+
+    def test_actual_v0_1_decision_and_three_anchors_migrate_transactionally(self):
+        database = Path(self.tmp.name) / "v0.1.sqlite3"
+        connection = sqlite3.connect(database)
+        connection.executescript(V0_1_SCHEMA)
+        digest = "d" * 64
+        connection.execute(
+            """
+            INSERT INTO decisions (
+                decision_id, owner_agent_id, server_id, repository, pr_number,
+                head_sha, base_sha, proposal_digest
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "deployed-pr",
+                "agent-owner",
+                "server-vps",
+                "acme/widgets",
+                42,
+                "a" * 40,
+                "b" * 40,
+                digest,
+            ),
+        )
+        connection.executemany(
+            """
+            INSERT INTO anchors (platform, chat_id, message_id, decision_id)
+            VALUES ('telegram', 'owner-chat', ?, 'deployed-pr')
+            """,
+            [("alert",), ("answer-1",), ("answer-2",)],
+        )
+        connection.commit()
+        connection.close()
+
+        migrated = self.module.Storage(database)
+        try:
+            decision = migrated.get_decision("deployed-pr")
+            self.assertEqual(decision["mode"], "pr")
+            self.assertIsNone(decision["context"])
+            self.assertEqual(decision["proposal_digest"], digest)
+            anchors = migrated.connection.execute(
+                "SELECT message_id FROM anchors ORDER BY rowid"
+            ).fetchall()
+            self.assertEqual([row[0] for row in anchors], ["alert", "answer-1", "answer-2"])
+            for column, value in (
+                ("mode", "conversation"),
+                ("context", '{}'),
+            ):
+                with self.subTest(column=column), self.assertRaisesRegex(
+                    sqlite3.IntegrityError, "identity is immutable"
+                ):
+                    with migrated.connection:
+                        migrated.connection.execute(
+                            f"UPDATE decisions SET {column} = ? WHERE decision_id = ?",
+                            (value, "deployed-pr"),
+                        )
+        finally:
+            migrated.close()
 
 
 if __name__ == "__main__":

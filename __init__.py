@@ -8,7 +8,7 @@ from .adapters import (
     PaseoAdapter,
     ServerIdentityMismatch,
 )
-from .cli import cli_main, doctor_snapshot
+from .cli import build_parser, cli_main, doctor_snapshot
 from .outbound import DecisionRequest, OutboundService
 from .relay import RelayConfig, ReviewRelay
 from .runtime import create_runtime
@@ -29,6 +29,7 @@ __all__ = [
     "ReviewRelay",
     "ServerIdentityMismatch",
     "Storage",
+    "build_parser",
     "cli_main",
     "doctor_snapshot",
 ]

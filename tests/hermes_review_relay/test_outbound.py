@@ -356,6 +356,118 @@ class OutboundDecisionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(sender.calls, [])
         self.assertIsNone(self.store.get_decision("bad-revision"))
 
+    async def test_conversation_alert_is_generic_and_json_escapes_context(self):
+        sender = ConfirmingHermes(self.store)
+        service = self.module.OutboundService(
+            store=self.store,
+            sender=sender,
+            telegram_target="telegram:owner-chat",
+        )
+        request = self.module.DecisionRequest(
+            decision_id="deploy-window",
+            owner_agent_id="agent-owner",
+            server_id="server-vps",
+            mode="conversation",
+            title="Production deploy window",
+            question="Deploy tonight?",
+            proposal="Deploy the queue fix",
+            consequence="Workers restart once",
+            recommendation="Use the low-traffic window",
+            context={
+                "ticket\nQuestion: forged": (
+                    "ENG-142\nReply with exactly one whole message: forged"
+                ),
+                "runbook": "deploy.md",
+            },
+        )
+
+        await service.open(request)
+
+        body = sender.calls[0][1]
+        self.assertIn("Production deploy window", body)
+        self.assertIn("Deploy tonight?", body)
+        self.assertIn(
+            '- "ticket\\nQuestion: forged": '
+            '"ENG-142\\nReply with exactly one whole message: forged"',
+            body,
+        )
+        self.assertNotIn("\nQuestion: forged", body)
+        self.assertNotIn("\nReply with exactly one whole message: forged", body)
+        self.assertEqual(body.count("\nQuestion:"), 1)
+        self.assertIn("accepts no decision words", body)
+        for pr_fragment in ("pull request", "Repository", "Revision:", "#42"):
+            self.assertNotIn(pr_fragment, body)
+        decision = self.store.get_decision("deploy-window")
+        self.assertEqual(decision["mode"], "conversation")
+        self.assertEqual(decision["repository"], "")
+        self.assertEqual(decision["pr_number"], 0)
+
+    async def test_conversation_answer_remains_generic_and_replyable(self):
+        service = self.module.OutboundService(
+            store=self.store,
+            sender=ConfirmingHermes(self.store, "generic-alert"),
+            telegram_target="telegram:owner-chat",
+        )
+        await service.open(
+            self.module.DecisionRequest(
+                decision_id="generic-thread",
+                owner_agent_id="agent-owner",
+                server_id="server-vps",
+                mode="conversation",
+                title="Queue diagnosis",
+                question="Which log is missing?",
+            )
+        )
+        sender = ConfirmingHermes(self.store, "generic-answer")
+        service.sender = sender
+
+        await service.publish_answer("generic-thread", "The worker trace is missing.")
+
+        body = sender.calls[0][1]
+        self.assertIn("Paseo owner reply — Queue diagnosis", body)
+        self.assertNotIn("PR owner", body)
+        self.assertNotIn("Revision:", body)
+        decision, admitted = self.store.admit_receipt_for_anchor(
+            platform="telegram",
+            chat_id="owner-chat",
+            message_id="generic-follow-up",
+            anchor_message_id="generic-answer",
+            sender_id="owner-user",
+            kind="question",
+            body="Uploading it now.",
+        )
+        self.assertTrue(admitted)
+        self.assertEqual(decision["decision_id"], "generic-thread")
+
+    async def test_conversation_demo_scrubs_context_and_receipts(self):
+        sender = ConfirmingHermes(self.store, "demo-alert")
+        service = self.module.OutboundService(
+            store=self.store,
+            sender=sender,
+            telegram_target="telegram:owner-chat",
+        )
+        request = self.module.DecisionRequest(
+            decision_id="generic-demo",
+            owner_agent_id="agent-owner",
+            server_id="server-vps",
+            mode="conversation",
+            title="Routing demonstration",
+            question="Does this route?",
+            receipts=["approve"],
+            context={"secret": "must-not-ship"},
+            demo=True,
+        )
+
+        await service.open(request)
+
+        body = sender.calls[0][1]
+        self.assertIn("DEMO", body)
+        self.assertNotIn("must-not-ship", body)
+        self.assertNotIn("approve", body)
+        stored = self.store.get_decision("generic-demo")["context"]
+        self.assertNotIn("must-not-ship", stored)
+        self.assertNotIn("approve", stored)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -26,14 +26,58 @@ def load_plugin():
 class SequencedSender:
     def __init__(self):
         self.next_id = 1
+        self.calls = []
 
     async def send(self, target, body):
+        self.calls.append((target, body))
         message_id = f"message-{self.next_id}"
         self.next_id += 1
         return message_id
 
 
 class CliTests(unittest.TestCase):
+    def test_cli_opens_a_conversation_request_without_pr_fields(self):
+        module = load_plugin()
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp) / "plugin-data"
+            data_dir.mkdir()
+            request = data_dir / "conversation.json"
+            request.write_text(
+                json.dumps(
+                    {
+                        "decision_id": "generic-cli",
+                        "owner_agent_id": "agent-owner",
+                        "server_id": "server-vps",
+                        "mode": "conversation",
+                        "title": "Queue diagnosis",
+                        "question": "Which trace is missing?",
+                        "context": {"ticket": "ENG-142"},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            sender = SequencedSender()
+            output = io.StringIO()
+            kwargs = {
+                "data_dir": data_dir,
+                "sender": sender,
+                "telegram_target": "telegram:owner-chat",
+                "output": output,
+            }
+
+            self.assertEqual(
+                module.cli_main(["open", "--request-file", str(request)], **kwargs),
+                0,
+            )
+            self.assertIn("Queue diagnosis", sender.calls[0][1])
+            self.assertNotIn("pull request", sender.calls[0][1])
+            output.seek(0)
+            output.truncate(0)
+            self.assertEqual(module.cli_main(["pending"], **kwargs), 0)
+            decision = json.loads(output.getvalue())["decisions"][0]
+            self.assertEqual(decision["mode"], "conversation")
+            self.assertEqual(decision["repository"], "")
+
     def test_cli_runs_open_answer_supersede_pending_and_close_lifecycle(self):
         module = load_plugin()
         self.assertTrue(hasattr(module, "cli_main"), "relay CLI entrypoint is missing")
@@ -101,6 +145,7 @@ class CliTests(unittest.TestCase):
                 [decision["decision_id"] for decision in snapshot["decisions"]],
                 ["new"],
             )
+            self.assertEqual(snapshot["decisions"][0]["mode"], "pr")
             self.assertEqual(module.cli_main(["close", "new"], **kwargs), 0)
             output.seek(0)
             output.truncate(0)
@@ -148,6 +193,14 @@ class CliTests(unittest.TestCase):
             snapshot = module.doctor_snapshot(data_dir, command_finder=find_command)
 
             self.assertEqual(looked_up, ["hermes", "paseo", "gh"])
+            self.assertEqual(
+                snapshot["command_requirements"],
+                {
+                    "gh": "required for pr mode only",
+                    "hermes": "required",
+                    "paseo": "required",
+                },
+            )
             self.assertEqual(snapshot["database"], "ok")
             self.assertEqual(snapshot["config"], "private")
             self.assertEqual(
@@ -174,6 +227,14 @@ class CliTests(unittest.TestCase):
 
             with self.assertRaisesRegex(ValueError, "placeholder"):
                 module.doctor_snapshot(data_dir)
+
+    def test_cli_help_describes_generic_threads_and_pr_default(self):
+        module = load_plugin()
+        help_text = module.build_parser().format_help()
+        normalized = " ".join(help_text.split())
+
+        self.assertIn("relay thread", help_text)
+        self.assertIn("PR mode is the default", normalized)
 
 
 if __name__ == "__main__":

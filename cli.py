@@ -13,13 +13,19 @@ from .storage import Storage
 
 
 def build_parser():
-    parser = argparse.ArgumentParser(prog="hermes-relay")
+    parser = argparse.ArgumentParser(
+        prog="hermes-relay",
+        description=(
+            "Route an anchored Telegram reply to a persistent Paseo relay thread. "
+            "PR mode is the default for backward compatibility."
+        ),
+    )
     commands = parser.add_subparsers(dest="command", required=True)
 
-    open_parser = commands.add_parser("open", help="Open and send a review decision")
+    open_parser = commands.add_parser("open", help="Open and send a relay thread")
     open_parser.add_argument("--request-file", required=True)
 
-    supersede = commands.add_parser("supersede", help="Supersede and resend a decision")
+    supersede = commands.add_parser("supersede", help="Supersede and resend a thread")
     supersede.add_argument("decision_id")
     supersede.add_argument("--request-file", required=True)
 
@@ -27,7 +33,7 @@ def build_parser():
     answer.add_argument("decision_id")
     answer.add_argument("--file", required=True)
 
-    close = commands.add_parser("close", help="Close a transport decision")
+    close = commands.add_parser("close", help="Close a relay thread")
     close.add_argument("decision_id")
 
     commands.add_parser("pending", help="Inspect unresolved transport state")
@@ -57,6 +63,11 @@ def doctor_snapshot(data_dir, *, command_finder=shutil.which):
     return {
         "commands": {
             name: command_finder(name) for name in ("hermes", "paseo", "gh")
+        },
+        "command_requirements": {
+            "hermes": "required",
+            "paseo": "required",
+            "gh": "required for pr mode only",
         },
         "config": "private",
         "database": integrity,

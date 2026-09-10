@@ -1,9 +1,10 @@
 import hashlib
 import json
 import uuid
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass
 
 from .adapters import AmbiguousDelivery, CommandFailure
+from .modes import alert_body, answer_body, sanitize_request, storage_fields, validate_request
 
 
 @dataclass(frozen=True)
@@ -11,15 +12,19 @@ class DecisionRequest:
     decision_id: str
     owner_agent_id: str
     server_id: str
-    repository: str
-    pr_number: int
-    head_sha: str
-    base_sha: str
-    proposal: str
-    consequence: str
-    recommendation: str
-    question: str
+    repository: str | None = None
+    pr_number: int | None = None
+    head_sha: str | None = None
+    base_sha: str | None = None
+    proposal: str = ""
+    consequence: str = ""
+    recommendation: str = ""
+    question: str = ""
     demo: bool = False
+    mode: str = "pr"
+    title: str = ""
+    receipts: list | None = None
+    context: dict | None = None
 
     def proposal_digest(self):
         encoded = json.dumps(asdict(self), sort_keys=True, separators=(",", ":")).encode(
@@ -35,21 +40,19 @@ class OutboundService:
         self.telegram_target = telegram_target
 
     async def open(self, request):
-        self._validate_request(request)
-        request = self._sanitized_request(request)
+        validate_request(request)
+        request = sanitize_request(request)
         digest = request.proposal_digest()
+        identity = storage_fields(request)
         self.store.open_decision(
             decision_id=request.decision_id,
             owner_agent_id=request.owner_agent_id,
             server_id=request.server_id,
-            repository=request.repository,
-            pr_number=request.pr_number,
-            head_sha=request.head_sha,
-            base_sha=request.base_sha,
             proposal_digest=digest,
             demo=request.demo,
+            **identity,
         )
-        body = self._alert_body(request, digest)
+        body = alert_body(request, digest)
         attempt_id = str(uuid.uuid4())
         self.store.create_outbound_attempt(
             attempt_id, request.decision_id, "alert", body
@@ -107,13 +110,7 @@ class OutboundService:
         decision = self.store.get_decision(decision_id)
         if decision is None or decision["status"] != "open":
             raise ValueError("answers require an open decision")
-        body = (
-            f"PR owner reply — {decision['repository']}#{decision['pr_number']}\n"
-            f"Decision: {decision_id}\n"
-            f"Revision: head {decision['head_sha']}; base {decision['base_sha']}\n\n"
-            f"{answer}\n\n"
-            "Reply to this message to keep the same owner and revision association."
-        )
+        body = answer_body(decision, answer)
         attempt_id = str(uuid.uuid4())
         self.store.create_outbound_attempt(attempt_id, decision_id, "answer", body)
         try:
@@ -134,22 +131,20 @@ class OutboundService:
         return {"attempt_id": attempt_id, "message_id": str(message_id)}
 
     async def supersede(self, old_decision_id, request):
-        self._validate_request(request)
-        request = self._sanitized_request(request)
+        validate_request(request)
+        request = sanitize_request(request)
         digest = request.proposal_digest()
+        identity = storage_fields(request)
         self.store.supersede_decision(
             old_decision_id,
             decision_id=request.decision_id,
             owner_agent_id=request.owner_agent_id,
             server_id=request.server_id,
-            repository=request.repository,
-            pr_number=request.pr_number,
-            head_sha=request.head_sha,
-            base_sha=request.base_sha,
             proposal_digest=digest,
             demo=request.demo,
+            **identity,
         )
-        body = self._alert_body(request, digest)
+        body = alert_body(request, digest)
         attempt_id = str(uuid.uuid4())
         self.store.create_outbound_attempt(
             attempt_id, request.decision_id, "alert", body
@@ -170,62 +165,3 @@ class OutboundService:
             message_id,
         )
         return {"attempt_id": attempt_id, "message_id": str(message_id)}
-
-    @staticmethod
-    def _alert_body(request, digest):
-        if request.demo:
-            return (
-                "DEMO REVIEW RELAY CHECK — no real pull request\n\n"
-                f"Proposal: {request.proposal}\n"
-                f"Consequence: {request.consequence}\n"
-                f"Question: {request.question}\n\n"
-                "This demo cannot accept approve, reject, or hold. Reply with a free-form question to test routing."
-            )
-        return (
-            "HUMAN DECISION REQUIRED\n"
-            f"{request.repository}#{request.pr_number}\n\n"
-            f"Proposal: {request.proposal}\n"
-            f"Consequence: {request.consequence}\n"
-            f"Recommendation: {request.recommendation}\n"
-            f"Question: {request.question}\n"
-            f"Revision: head {request.head_sha}; base {request.base_sha}\n"
-            f"Proposal digest: {digest}\n\n"
-            "Reply with exactly one whole message: approve, reject, or hold.\n"
-            "Anything else is forwarded as a question. Delivery never merges or approves automatically."
-        )
-
-    @staticmethod
-    def _sanitized_request(request):
-        if not request.demo:
-            return request
-        return replace(
-            request,
-            repository="__demo__",
-            pr_number=0,
-            head_sha="0" * 40,
-            base_sha="0" * 40,
-        )
-
-    @staticmethod
-    def _validate_request(request):
-        required = (
-            request.decision_id,
-            request.owner_agent_id,
-            request.server_id,
-            request.proposal,
-            request.consequence,
-            request.recommendation,
-            request.question,
-        )
-        if any(not isinstance(value, str) or not value for value in required):
-            raise ValueError("decision fields must be non-empty strings")
-        if request.demo:
-            return
-        hexadecimal = set("0123456789abcdefABCDEF")
-        revisions = (request.head_sha, request.base_sha)
-        if any(len(revision) != 40 or not set(revision) <= hexadecimal for revision in revisions):
-            raise ValueError("head and base revision must be 40 hexadecimal characters")
-        if not isinstance(request.pr_number, int) or request.pr_number < 1:
-            raise ValueError("pull request number must be positive")
-        if not isinstance(request.repository, str) or request.repository.count("/") != 1:
-            raise ValueError("repository must be owner/name")

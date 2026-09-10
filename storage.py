@@ -15,6 +15,8 @@ CREATE TABLE IF NOT EXISTS decisions (
     head_sha TEXT NOT NULL,
     base_sha TEXT NOT NULL,
     proposal_digest TEXT NOT NULL,
+    mode TEXT NOT NULL DEFAULT 'pr',
+    context TEXT,
     demo INTEGER NOT NULL DEFAULT 0 CHECK (demo IN (0, 1)),
     status TEXT NOT NULL DEFAULT 'open'
         CHECK (status IN ('open', 'superseded', 'closed', 'blocked', 'uncertain')),
@@ -57,14 +59,17 @@ CREATE TABLE IF NOT EXISTS outbound_attempts (
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
-CREATE TRIGGER IF NOT EXISTS decisions_identity_is_immutable
+"""
+
+IMMUTABILITY_TRIGGER = """
+CREATE TRIGGER decisions_identity_is_immutable
 BEFORE UPDATE OF
     decision_id, owner_agent_id, server_id, repository, pr_number,
-    head_sha, base_sha, proposal_digest, demo
+    head_sha, base_sha, proposal_digest, mode, context, demo
 ON decisions
 BEGIN
     SELECT RAISE(ABORT, 'decision identity is immutable');
-END;
+END
 """
 
 
@@ -117,8 +122,34 @@ class Storage:
         self.connection.execute("PRAGMA foreign_keys = ON")
         self.connection.execute("PRAGMA journal_mode = WAL")
         self.connection.executescript(SCHEMA)
+        self._ensure_mode_columns()
         self._ensure_owner_columns()
         self._recover_interrupted_operations()
+
+    def _ensure_mode_columns(self):
+        self.connection.execute("BEGIN IMMEDIATE")
+        try:
+            columns = {
+                row[1]
+                for row in self.connection.execute("PRAGMA table_info(decisions)")
+            }
+            if "mode" not in columns:
+                self.connection.execute(
+                    "ALTER TABLE decisions ADD COLUMN mode TEXT NOT NULL DEFAULT 'pr'"
+                )
+            if "context" not in columns:
+                self.connection.execute(
+                    "ALTER TABLE decisions ADD COLUMN context TEXT"
+                )
+            self.connection.execute(
+                "DROP TRIGGER IF EXISTS decisions_identity_is_immutable"
+            )
+            self.connection.execute(IMMUTABILITY_TRIGGER)
+        except Exception:
+            self.connection.rollback()
+            raise
+        else:
+            self.connection.commit()
 
     def _ensure_owner_columns(self):
         with self.connection:
@@ -204,14 +235,16 @@ class Storage:
         base_sha,
         proposal_digest,
         demo=False,
+        mode="pr",
+        context=None,
     ):
         with self.connection:
             self.connection.execute(
                 """
                 INSERT INTO decisions (
                     decision_id, owner_agent_id, server_id, repository, pr_number,
-                    head_sha, base_sha, proposal_digest, demo
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    head_sha, base_sha, proposal_digest, mode, context, demo
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     decision_id,
@@ -222,6 +255,8 @@ class Storage:
                     head_sha,
                     base_sha,
                     proposal_digest,
+                    mode,
+                    context,
                     int(demo),
                 ),
             )
@@ -240,6 +275,8 @@ class Storage:
         base_sha,
         proposal_digest,
         demo=False,
+        mode="pr",
+        context=None,
     ):
         with self.connection:
             cursor = self.connection.execute(
@@ -257,8 +294,8 @@ class Storage:
                 """
                 INSERT INTO decisions (
                     decision_id, owner_agent_id, server_id, repository, pr_number,
-                    head_sha, base_sha, proposal_digest, demo
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    head_sha, base_sha, proposal_digest, mode, context, demo
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     decision_id,
@@ -269,6 +306,8 @@ class Storage:
                     head_sha,
                     base_sha,
                     proposal_digest,
+                    mode,
+                    context,
                     int(demo),
                 ),
             )

@@ -1,5 +1,5 @@
 name: paseo-review-relay
-version: 0.1.0
-description: Routes anchored Telegram review replies to the exact persistent Paseo owner.
+version: 0.2.0
+description: Routes anchored Telegram replies to the exact persistent Paseo conversation owner.
 provides_hooks:
   - pre_gateway_dispatch

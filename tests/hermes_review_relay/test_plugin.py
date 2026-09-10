@@ -1,5 +1,6 @@
 import asyncio
 import importlib.util
+import io
 import json
 import os
 import sys
@@ -47,6 +48,11 @@ class FakeGatewayTelegram:
         self.messages.append((chat_id, text, reply_to))
 
 
+class ConfirmingHermes:
+    async def send(self, target, body):
+        return "generic-alert"
+
+
 class FailingPaseo:
     def __init__(self, module):
         self.module = module
@@ -84,6 +90,95 @@ class CurrentGithub:
 
 
 class PluginRegistrationTests(unittest.TestCase):
+    def test_explicit_empty_receipts_open_and_route_only_as_questions(self):
+        module = load_plugin()
+        with tempfile.TemporaryDirectory() as tmp:
+            hermes_home = Path(tmp) / ".hermes"
+            data_dir = hermes_home / "plugin-data" / "paseo-review-relay"
+            data_dir.mkdir(parents=True)
+            config_path = data_dir / "config.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "telegramChatId": "owner-chat",
+                        "telegramUserId": "owner-user",
+                        "serverId": "server-vps",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            config_path.chmod(0o600)
+            request_path = Path(tmp) / "conversation.json"
+            request_path.write_text(
+                json.dumps(
+                    {
+                        "decision_id": "generic-hook",
+                        "owner_agent_id": "agent-owner",
+                        "server_id": "server-vps",
+                        "mode": "conversation",
+                        "title": "Queue diagnosis",
+                        "question": "Which trace is missing?",
+                        "receipts": [],
+                        "context": {"ticket": "ENG-142"},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            module.cli_main(
+                ["open", "--request-file", str(request_path)],
+                data_dir=data_dir,
+                sender=ConfirmingHermes(),
+                telegram_target="telegram:owner-chat",
+                output=io.StringIO(),
+            )
+            runtime_context = FakeContext()
+
+            with patch.dict(
+                os.environ, {"HERMES_HOME": str(hermes_home)}, clear=False
+            ):
+                runtime = module.register(runtime_context)
+            paseo = RecordingPaseo()
+            runtime.relay.paseo = paseo
+            runtime.relay.github = None
+            telegram = FakeGatewayTelegram()
+            event = SimpleNamespace(
+                source=SimpleNamespace(
+                    platform="telegram",
+                    chat_id="owner-chat",
+                    user_id="owner-user",
+                    chat_type="dm",
+                ),
+                text="approve",
+                message_id="generic-reply",
+                reply_to_message_id="generic-alert",
+                raw_message=SimpleNamespace(from_user=SimpleNamespace(is_bot=False)),
+            )
+
+            async def dispatch():
+                result = runtime_context.hooks["pre_gateway_dispatch"](
+                    event=event,
+                    gateway=SimpleNamespace(adapters={"telegram": telegram}),
+                )
+                await runtime_context.tasks.pop()
+                return result
+
+            try:
+                result = asyncio.run(dispatch())
+                self.assertEqual(
+                    result, {"action": "skip", "reason": "paseo-review-relay"}
+                )
+                self.assertEqual(len(paseo.prompts), 1)
+                self.assertIn("mode=conversation", paseo.prompts[0][1])
+                self.assertIn("kind=question", paseo.prompts[0][1])
+                self.assertNotIn("driver_must_revalidate", paseo.prompts[0][1])
+                self.assertNotIn("repository=", paseo.prompts[0][1])
+                decision = runtime.store.get_decision("generic-hook")
+                self.assertEqual(
+                    json.loads(decision["context"])["receipts"], []
+                )
+            finally:
+                runtime.store.close()
+
     def test_worker_registration_supports_event_loop_relay_and_storage_lifecycle(self):
         module = load_plugin()
         with tempfile.TemporaryDirectory() as tmp:

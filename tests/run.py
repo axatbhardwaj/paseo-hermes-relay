@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 
 
-MINIMUM_TESTS = 54
+MINIMUM_TESTS = 73
 TEST_ROOT = Path(__file__).resolve().parent
 
 
