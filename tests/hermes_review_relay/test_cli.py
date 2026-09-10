@@ -148,6 +148,14 @@ class CliTests(unittest.TestCase):
             snapshot = module.doctor_snapshot(data_dir, command_finder=find_command)
 
             self.assertEqual(looked_up, ["hermes", "paseo", "gh"])
+            self.assertEqual(
+                snapshot["command_requirements"],
+                {
+                    "gh": "required for pr mode only",
+                    "hermes": "required",
+                    "paseo": "required",
+                },
+            )
             self.assertEqual(snapshot["database"], "ok")
             self.assertEqual(snapshot["config"], "private")
             self.assertEqual(
@@ -174,6 +182,14 @@ class CliTests(unittest.TestCase):
 
             with self.assertRaisesRegex(ValueError, "placeholder"):
                 module.doctor_snapshot(data_dir)
+
+    def test_cli_help_describes_generic_threads_and_pr_default(self):
+        module = load_plugin()
+        help_text = module.build_parser().format_help()
+        normalized = " ".join(help_text.split())
+
+        self.assertIn("relay thread", help_text)
+        self.assertIn("PR mode is the default", normalized)
 
 
 if __name__ == "__main__":
