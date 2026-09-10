@@ -55,6 +55,8 @@ def _validate_receipts(receipts):
         raise ValueError(
             "receipts must contain zero to five lowercase ASCII words"
         )
+    if len(set(receipts)) != len(receipts):
+        raise ValueError("conversation receipt words must be unique")
 
 
 def validate_request(request):

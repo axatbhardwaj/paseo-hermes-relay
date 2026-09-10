@@ -127,6 +127,11 @@ class ModeRequestTests(unittest.IsolatedAsyncioTestCase):
                     await self.service.open(request)
                 self.assertEqual(self.sender.calls, [])
 
+        duplicate = self.conversation(receipts=["accept", "accept"])
+        with self.assertRaisesRegex(ValueError, "unique"):
+            await self.service.open(duplicate)
+        self.assertEqual(self.sender.calls, [])
+
         valid = self.conversation(receipts=["accept", "decline"])
         await self.service.open(valid)
         self.assertIn("accept, decline", self.sender.calls[0][1])
