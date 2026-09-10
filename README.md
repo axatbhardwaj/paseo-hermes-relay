@@ -2,9 +2,10 @@
 
 `paseo-hermes-relay` is the standalone repository for the
 `paseo-review-relay` Hermes user plugin. The plugin routes an anchored Telegram
-reply to the exact persistent Paseo PR owner and review revision that created
-the alert. It is a transport boundary: it never approves, merges, chooses a
-different owner, or expands prior authority.
+reply to the exact persistent Paseo conversation owner that created the alert.
+Pull-request review is the default backward-compatible mode, not the relay's
+identity. It is a transport boundary: it never approves, merges, deploys,
+chooses a different owner, or expands prior authority.
 
 The plugin is standard-library Python, registers only `pre_gateway_dispatch`,
 and stores its private delivery map in SQLite under the Hermes plugin-data
@@ -15,8 +16,9 @@ security boundary.
 
 - Python 3.11 or newer
 - Hermes with user-plugin support
-- `paseo` and `gh` available to the Hermes gateway process
-- A persistent local Paseo owner for each real decision
+- `hermes` and `paseo` available to the Hermes gateway process
+- `gh` available only when PR-mode threads are used
+- A persistent local Paseo owner for each real thread
 
 ## Installation
 
@@ -97,6 +99,12 @@ delete or automatically replace `relay.sqlite3` during rollback. Preserve the
 current database, WAL files, and backups for audit; restoring an older database
 requires explicit owner authorization.
 
+Do not open conversation-mode threads until native Hermes discovery and both
+0.2.0 doctor checks pass. Version 0.1 does not understand those rows: before a
+downgrade, reconcile and close every conversation thread, retain the complete
+database backup, and verify the remaining PR transport state. Never run 0.1 and
+0.2 against the same live database concurrently.
+
 ## Private configuration
 
 `config.json` must contain non-empty, non-placeholder strings and have mode
@@ -116,23 +124,70 @@ Missing, unreadable, malformed, permissive, or placeholder configuration leaves
 the hook inert. `hermes-relay doctor` validates the private configuration and
 the SQLite database without making external calls.
 
-## Reply workflow
+## Conversation workflow
 
-Open a decision from a private UTF-8 JSON request file:
+Open a generic thread from a private UTF-8 JSON request file:
 
 ```bash
 hermes-relay open --request-file /private/path/request.json
 ```
 
-The request identifies the decision, persistent owner, local server,
-repository, pull request, exact 40-character head and base revisions, proposal,
-consequence, recommendation, and question. The resulting Telegram message is
-the reply anchor.
+Example conversation request:
+
+```json
+{
+  "decision_id": "deploy-window-2026-09-12",
+  "owner_agent_id": "PERSISTENT_PASEO_AGENT_ID",
+  "server_id": "LOCAL_PASEO_SERVER_ID",
+  "mode": "conversation",
+  "title": "Production deploy window",
+  "question": "Deploy the queue fix tonight at 22:00 IST?",
+  "proposal": "Deploy the reviewed queue fix",
+  "consequence": "Workers restart once",
+  "recommendation": "Use the low-traffic window",
+  "receipts": ["approve", "reject", "hold"],
+  "context": {
+    "runbook": "deploy.md",
+    "ticket": "ENG-142"
+  }
+}
+```
+
+Conversation mode requires `title` and `question`, rejects all PR fields, and
+does not need GitHub or `gh`. `proposal`, `consequence`, and `recommendation`
+are optional strings. `context` must be a string-to-string map whose canonical
+UTF-8 JSON is at most 2048 bytes. `receipts` is optional and defaults to none;
+when present it contains one to five unique lowercase ASCII words.
+
+Every other eligible text reply is a question. A configured whole-message
+receipt is delivery for this immutable thread, not authority to act. The owning
+Paseo driver must revalidate authority, context, and live state before acting.
+
+## PR workflow
+
+Omitting `mode` selects `pr`, preserving the 0.1 request shape:
+
+```json
+{
+  "decision_id": "review-acme-widgets-42",
+  "owner_agent_id": "PERSISTENT_PASEO_AGENT_ID",
+  "server_id": "LOCAL_PASEO_SERVER_ID",
+  "repository": "acme/widgets",
+  "pr_number": 42,
+  "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "base_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "proposal": "Merge the reviewed change",
+  "consequence": "The change enters the release branch",
+  "recommendation": "approve",
+  "question": "Should the owner proceed?"
+}
+```
 
 An exact whole-message `approve`, `reject`, or `hold` is recorded as a decision
 receipt for that proposal only. Every other eligible text reply is a question.
-The owning Paseo driver must still revalidate the receipt and live revision
-before acting.
+Before forwarding a receipt, the relay requires the PR to remain open at the
+stored exact head and base revisions. The owning Paseo driver must still
+revalidate the receipt and live revision before acting.
 
 Operator commands:
 
@@ -144,13 +199,14 @@ hermes-relay close DECISION_ID
 hermes-relay retry FAILED_ATTEMPT_ID
 ```
 
-`pending` should be checked on later owner runs. For a `blocked` or
-`uncertain` decision, inspect and reconcile the actual Telegram, Paseo, and
-GitHub evidence. Never retry or replay an ambiguous or uncertain attempt. If
-verified transport should continue, close the old decision and open a fresh
-request with a new decision ID, the current revisions, and the verified
-persistent owner. `retry` accepts only definite failed sends. A successful send
-means the platform returned a message ID, not that the user read it.
+`pending` includes each unresolved thread's mode and should be checked on later
+owner runs. For a `blocked` or `uncertain` thread, inspect and reconcile the
+actual Telegram and Paseo evidence, plus GitHub evidence in PR mode. Never retry
+or replay an ambiguous or uncertain attempt. If verified transport should
+continue, close the old thread and open a fresh request with a new decision ID
+and the verified persistent owner. `retry` accepts only definite failed sends.
+A successful send means the platform returned a message ID, not that the user
+read it.
 
 ## Development
 
@@ -161,4 +217,4 @@ python3 -m compileall -q .
 ```
 
 The suite has no third-party dependencies. CI uses `tests/run.py` to fail if
-fewer than 54 tests are discovered.
+fewer than 72 tests are discovered.
