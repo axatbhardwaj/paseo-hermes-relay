@@ -26,7 +26,7 @@ class SilentSender:
 
     async def send(self, target, body):
         self.calls.append((target, body))
-        return "alert-1"
+        return f"alert-{len(self.calls)}"
 
 
 class ModeRequestTests(unittest.IsolatedAsyncioTestCase):

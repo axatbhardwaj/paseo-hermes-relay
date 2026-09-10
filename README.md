@@ -217,4 +217,4 @@ python3 -m compileall -q .
 ```
 
 The suite has no third-party dependencies. CI uses `tests/run.py` to fail if
-fewer than 72 tests are discovered.
+fewer than 73 tests are discovered.
