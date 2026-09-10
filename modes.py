@@ -51,10 +51,9 @@ def _validate_receipts(receipts):
             not isinstance(word, str) or RECEIPT_PATTERN.fullmatch(word) is None
             for word in receipts
         )
-        or len(set(receipts)) != len(receipts)
     ):
         raise ValueError(
-            "receipts must contain one to five unique lowercase ASCII words"
+            "receipts must contain one to five lowercase ASCII words"
         )
 
 

@@ -110,14 +110,13 @@ class ModeRequestTests(unittest.IsolatedAsyncioTestCase):
                     await self.service.open(request)
                 self.assertEqual(self.sender.calls, [])
 
-    async def test_conversation_receipts_are_bounded_lowercase_unique_words(self):
+    async def test_conversation_receipts_are_bounded_lowercase_words(self):
         invalid = (
             "approve",
             [],
             ["two words"],
             ["Approve"],
             ["ok1"],
-            ["ok", "ok"],
             ["a", "b", "c", "d", "e", "f"],
         )
         for index, receipts in enumerate(invalid):
