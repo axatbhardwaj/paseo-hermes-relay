@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[2]
 PLUGIN_ROOT = ROOT
 
 V0_1_SCHEMA = """
-CREATE TABLE decisions (
+CREATE TABLE IF NOT EXISTS decisions (
     decision_id TEXT PRIMARY KEY,
     owner_agent_id TEXT NOT NULL,
     server_id TEXT NOT NULL,
@@ -29,7 +29,7 @@ CREATE TABLE decisions (
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
-CREATE TABLE anchors (
+CREATE TABLE IF NOT EXISTS anchors (
     platform TEXT NOT NULL,
     chat_id TEXT NOT NULL,
     message_id TEXT NOT NULL,
@@ -37,7 +37,7 @@ CREATE TABLE anchors (
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     PRIMARY KEY (platform, chat_id, message_id)
 );
-CREATE TABLE inbound_receipts (
+CREATE TABLE IF NOT EXISTS inbound_receipts (
     platform TEXT NOT NULL,
     chat_id TEXT NOT NULL,
     message_id TEXT NOT NULL,
@@ -52,7 +52,7 @@ CREATE TABLE inbound_receipts (
     updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     PRIMARY KEY (platform, chat_id, message_id)
 );
-CREATE TABLE outbound_attempts (
+CREATE TABLE IF NOT EXISTS outbound_attempts (
     attempt_id TEXT PRIMARY KEY,
     decision_id TEXT NOT NULL REFERENCES decisions(decision_id),
     kind TEXT NOT NULL CHECK (kind IN ('alert', 'answer')),
@@ -65,7 +65,7 @@ CREATE TABLE outbound_attempts (
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
-CREATE TRIGGER decisions_identity_is_immutable
+CREATE TRIGGER IF NOT EXISTS decisions_identity_is_immutable
 BEFORE UPDATE OF
     decision_id, owner_agent_id, server_id, repository, pr_number,
     head_sha, base_sha, proposal_digest, demo
