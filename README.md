@@ -1,6 +1,7 @@
 # paseo-hermes-relay
 
-`paseo-hermes-relay` is a Hermes user plugin that routes an anchored Telegram
+`paseo-hermes-relay` is the standalone repository for the
+`paseo-review-relay` Hermes user plugin. The plugin routes an anchored Telegram
 reply to the exact persistent Paseo PR owner and review revision that created
 the alert. It is a transport boundary: it never approves, merges, chooses a
 different owner, or expands prior authority.
@@ -26,24 +27,43 @@ path. Do not install from a moving branch.
 plugin_root="$HOME/.hermes/plugins/paseo-review-relay"
 git clone REPOSITORY_URL "$plugin_root"
 git -C "$plugin_root" checkout --detach REVIEWED_40_HEX_COMMIT
+```
 
-install -d -m 700 "$HOME/.local/bin"
-ln -s "$plugin_root/hermes-relay" "$HOME/.local/bin/hermes-relay"
+Then run the following local setup. It is safe to rerun: it preserves an
+existing private configuration and the mode of an existing `~/.local/bin`,
+and it refuses to replace a different CLI target.
+
+```bash
+bin_dir="$HOME/.local/bin"
+cli_link="$bin_dir/hermes-relay"
+wrapper="$plugin_root/hermes-relay"
+mkdir -p "$bin_dir"
+
+if test -L "$cli_link"; then
+  if test "$(readlink -f "$cli_link")" != "$(readlink -f "$wrapper")"; then
+    echo "Refusing to replace a symlink to a different wrapper: $cli_link" >&2
+    exit 1
+  fi
+elif test -e "$cli_link"; then
+  echo "Refusing to replace a non-symlink CLI: $cli_link" >&2
+  exit 1
+else
+  ln -s "$wrapper" "$cli_link"
+fi
+
+data_root="$HOME/.hermes/plugin-data/paseo-review-relay"
+config_path="$data_root/config.json"
+install -d -m 700 "$data_root"
+if ! test -e "$config_path"; then
+  install -m 600 "$plugin_root/config.example.json" "$config_path"
+fi
+chmod 600 "$config_path"
 ```
 
 The CLI must be a symlink, not a copied wrapper. `hermes-relay` resolves its
 real file location with `Path(__file__).resolve()` so its package-relative
-imports load from the plugin checkout.
-
-Create the private configuration before enabling the plugin:
-
-```bash
-data_root="$HOME/.hermes/plugin-data/paseo-review-relay"
-install -d -m 700 "$data_root"
-install -m 600 "$plugin_root/config.example.json" "$data_root/config.json"
-```
-
-Replace all three placeholders without printing their values, then enable and
+imports load from the plugin checkout. On first installation, replace all three
+configuration placeholders without printing their values. Then enable and
 validate the plugin:
 
 ```bash
@@ -62,6 +82,20 @@ setup workflow once that Haoshoku change is released. It verifies the selected
 tag and commit, deploys only the plugin allowlist, preserves private config and
 SQLite data, creates the required CLI symlink, and runs both doctor checks.
 This repository does not install Hermes, write VPS state, or update Haoshoku.
+
+## Updates and rollback
+
+Before changing the pinned plugin commit, inspect active work and quiesce the
+Hermes gateway. Back up the complete plugin directory, Hermes `config.yaml`,
+and the complete `plugin-data/paseo-review-relay` directory so the SQLite
+database and any WAL files remain together.
+
+To roll back, disable only `paseo-review-relay`, restore the reviewed plugin
+directory and Hermes configuration, re-enable the plugin, run both doctor
+checks, and restart only the Hermes gateway if discovery requires it. Do not
+delete or automatically replace `relay.sqlite3` during rollback. Preserve the
+current database, WAL files, and backups for audit; restoring an older database
+requires explicit owner authorization.
 
 ## Private configuration
 
@@ -110,15 +144,21 @@ hermes-relay close DECISION_ID
 hermes-relay retry FAILED_ATTEMPT_ID
 ```
 
-`pending` should be checked on later owner runs. `retry` accepts only definite
-failed sends; ambiguous sends are never replayed automatically. A successful
-send means the platform returned a message ID, not that the user read it.
+`pending` should be checked on later owner runs. For a `blocked` or
+`uncertain` decision, inspect and reconcile the actual Telegram, Paseo, and
+GitHub evidence. Never retry or replay an ambiguous or uncertain attempt. If
+verified transport should continue, close the old decision and open a fresh
+request with a new decision ID, the current revisions, and the verified
+persistent owner. `retry` accepts only definite failed sends. A successful send
+means the platform returned a message ID, not that the user read it.
 
 ## Development
 
 ```bash
-python3 -m unittest discover -s tests/hermes_review_relay -v
+python3 -m unittest discover -s tests -v
+python3 tests/run.py
 python3 -m compileall -q .
 ```
 
-The suite has no third-party dependencies.
+The suite has no third-party dependencies. CI uses `tests/run.py` to fail if
+fewer than 54 tests are discovered.
