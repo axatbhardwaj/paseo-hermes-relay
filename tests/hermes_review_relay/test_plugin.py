@@ -84,6 +84,92 @@ class CurrentGithub:
 
 
 class PluginRegistrationTests(unittest.TestCase):
+    def test_registered_hook_routes_a_generic_conversation_without_github(self):
+        module = load_plugin()
+        with tempfile.TemporaryDirectory() as tmp:
+            hermes_home = Path(tmp) / ".hermes"
+            data_dir = hermes_home / "plugin-data" / "paseo-review-relay"
+            data_dir.mkdir(parents=True)
+            config_path = data_dir / "config.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "telegramChatId": "owner-chat",
+                        "telegramUserId": "owner-user",
+                        "serverId": "server-vps",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            config_path.chmod(0o600)
+            context = json.dumps(
+                {
+                    "context": {"ticket": "ENG-142"},
+                    "receipts": [],
+                    "title": "Queue diagnosis",
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            store = module.Storage(data_dir / "relay.sqlite3")
+            store.open_decision(
+                decision_id="generic-hook",
+                owner_agent_id="agent-owner",
+                server_id="server-vps",
+                repository="",
+                pr_number=0,
+                head_sha="",
+                base_sha="",
+                proposal_digest="c" * 64,
+                mode="conversation",
+                context=context,
+            )
+            store.attach_anchor(
+                "generic-hook", "telegram", "owner-chat", "generic-alert"
+            )
+            store.close()
+            runtime_context = FakeContext()
+
+            with patch.dict(
+                os.environ, {"HERMES_HOME": str(hermes_home)}, clear=False
+            ):
+                runtime = module.register(runtime_context)
+            paseo = RecordingPaseo()
+            runtime.relay.paseo = paseo
+            runtime.relay.github = None
+            telegram = FakeGatewayTelegram()
+            event = SimpleNamespace(
+                source=SimpleNamespace(
+                    platform="telegram",
+                    chat_id="owner-chat",
+                    user_id="owner-user",
+                    chat_type="dm",
+                ),
+                text="Show me the missing trace.",
+                message_id="generic-reply",
+                reply_to_message_id="generic-alert",
+                raw_message=SimpleNamespace(from_user=SimpleNamespace(is_bot=False)),
+            )
+
+            async def dispatch():
+                result = runtime_context.hooks["pre_gateway_dispatch"](
+                    event=event,
+                    gateway=SimpleNamespace(adapters={"telegram": telegram}),
+                )
+                await runtime_context.tasks.pop()
+                return result
+
+            try:
+                result = asyncio.run(dispatch())
+                self.assertEqual(
+                    result, {"action": "skip", "reason": "paseo-review-relay"}
+                )
+                self.assertEqual(len(paseo.prompts), 1)
+                self.assertIn("mode=conversation", paseo.prompts[0][1])
+                self.assertNotIn("repository=", paseo.prompts[0][1])
+            finally:
+                runtime.store.close()
+
     def test_worker_registration_supports_event_loop_relay_and_storage_lifecycle(self):
         module = load_plugin()
         with tempfile.TemporaryDirectory() as tmp:

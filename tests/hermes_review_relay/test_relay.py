@@ -1,5 +1,6 @@
 import asyncio
 import importlib.util
+import json
 import sqlite3
 import sys
 import tempfile
@@ -146,6 +147,33 @@ class HermesReviewRelayTests(unittest.IsolatedAsyncioTestCase):
         tasks, self.tasks = self.tasks, []
         await asyncio.gather(*tasks)
 
+    def add_conversation(self, *, decision_id="conversation", receipts=()):
+        stored_context = json.dumps(
+            {
+                "context": {"ticket": "ENG-142"},
+                "receipts": list(receipts),
+                "title": "Production deploy window",
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        self.store.open_decision(
+            decision_id=decision_id,
+            owner_agent_id="agent-owner",
+            server_id="server-vps",
+            repository="",
+            pr_number=0,
+            head_sha="",
+            base_sha="",
+            proposal_digest="f" * 64,
+            mode="conversation",
+            context=stored_context,
+        )
+        self.store.attach_anchor(
+            decision_id, "telegram", "owner-chat", f"{decision_id}-alert"
+        )
+        return f"{decision_id}-alert"
+
     async def test_owner_question_routes_exact_text_to_mapped_agent(self):
         result = self.relay.pre_gateway_dispatch(event=self.event())
         self.assertEqual(result, {"action": "skip", "reason": "paseo-review-relay"})
@@ -159,6 +187,7 @@ class HermesReviewRelayTests(unittest.IsolatedAsyncioTestCase):
                     "agent-owner",
                     "[telegram-review-relay]\n"
                     "decision_id=decision-1\n"
+                    "mode=pr\n"
                     "kind=question\n"
                     "repository=acme/widgets\n"
                     "pr=42\n"
@@ -515,6 +544,92 @@ class HermesReviewRelayTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.paseo.attempts, [])
         self.assertEqual(self.store.get_decision("decision-1")["status"], "blocked")
         self.assertIn("owner", self.telegram.messages[0][1].lower())
+
+    async def test_conversation_question_has_generic_context_and_no_pr_fields(self):
+        anchor = self.add_conversation()
+
+        self.relay.pre_gateway_dispatch(
+            event=self.event(text="Can this wait?", reply_to_message_id=anchor)
+        )
+        await self.drain()
+
+        self.assertEqual(self.github.calls, [])
+        prompt = self.paseo.prompts[0][1]
+        self.assertIn("mode=conversation", prompt)
+        self.assertIn('title="Production deploy window"', prompt)
+        self.assertIn('context={"ticket":"ENG-142"}', prompt)
+        self.assertIn("kind=question", prompt)
+        for pr_line in ("repository=", "\npr=", "\nhead=", "\nbase="):
+            self.assertNotIn(pr_line, prompt)
+        self.assertIn("persistent Paseo owner", self.telegram.messages[0][1])
+        self.assertNotIn("PR owner", self.telegram.messages[0][1])
+
+    async def test_configured_conversation_receipt_skips_github_and_requires_revalidation(self):
+        anchor = self.add_conversation(receipts=("accept", "decline"))
+
+        self.relay.pre_gateway_dispatch(
+            event=self.event(text="ACCEPT", reply_to_message_id=anchor)
+        )
+        await self.drain()
+
+        self.assertEqual(self.github.calls, [])
+        prompt = self.paseo.prompts[0][1]
+        self.assertIn("kind=decision", prompt)
+        self.assertIn("driver_must_revalidate=true", prompt)
+        self.assertIn("text:\nACCEPT", prompt)
+        self.assertIn("delivery, not approval or action", self.telegram.messages[0][1])
+
+    async def test_unlisted_word_in_conversation_is_a_question(self):
+        anchor = self.add_conversation(receipts=("accept",))
+
+        self.relay.pre_gateway_dispatch(
+            event=self.event(text="approve", reply_to_message_id=anchor)
+        )
+        await self.drain()
+
+        self.assertEqual(self.github.calls, [])
+        prompt = self.paseo.prompts[0][1]
+        self.assertIn("kind=question", prompt)
+        self.assertNotIn("driver_must_revalidate", prompt)
+
+    async def test_unknown_stored_mode_is_blocked_before_admission(self):
+        with self.store.connection:
+            self.store.connection.execute("DROP TRIGGER decisions_identity_is_immutable")
+            self.store.connection.execute(
+                "UPDATE decisions SET mode = 'unknown' WHERE decision_id = 'decision-1'"
+            )
+
+        with self.assertLogs("paseo_review_relay.relay", level="ERROR"):
+            result = self.relay.pre_gateway_dispatch(event=self.event())
+        await self.drain()
+
+        self.assertEqual(result, {"action": "skip", "reason": "paseo-review-relay"})
+        self.assertEqual(self.store.get_decision("decision-1")["status"], "blocked")
+        self.assertIsNone(
+            self.store.receipt_status("telegram", "owner-chat", "reply-9")
+        )
+        self.assertEqual(self.paseo.prompts, [])
+        self.assertIn("temporarily unavailable", self.telegram.messages[0][1].lower())
+
+    async def test_malformed_stored_conversation_context_is_blocked(self):
+        anchor = self.add_conversation(decision_id="malformed")
+        with self.store.connection:
+            self.store.connection.execute("DROP TRIGGER decisions_identity_is_immutable")
+            self.store.connection.execute(
+                "UPDATE decisions SET context = '{bad json' WHERE decision_id = 'malformed'"
+            )
+
+        with self.assertLogs("paseo_review_relay.relay", level="ERROR"):
+            self.relay.pre_gateway_dispatch(
+                event=self.event(reply_to_message_id=anchor)
+            )
+        await self.drain()
+
+        self.assertEqual(self.store.get_decision("malformed")["status"], "blocked")
+        self.assertIsNone(
+            self.store.receipt_status("telegram", "owner-chat", "reply-9")
+        )
+        self.assertEqual(self.paseo.prompts, [])
 
 
 if __name__ == "__main__":
