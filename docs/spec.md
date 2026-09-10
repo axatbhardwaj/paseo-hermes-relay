@@ -22,19 +22,21 @@ Each immutable thread has one explicit mode:
   forwarded.
 - `conversation` requires `title` and `question` and rejects PR fields. It can
   carry optional `proposal`, `consequence`, `recommendation`, a bounded context
-  map, and zero to five opt-in receipt words. It never invokes GitHub.
+  map, and zero to five unique opt-in receipt words. It never invokes GitHub.
 
-Conversation receipts default to none. Configured receipts are lowercase ASCII
-single words and are delivery receipts for the exact immutable thread only. An
-explicit empty receipt list is non-authorizing and equivalent to omission.
+Conversation receipts default to none. Configured receipts are unique lowercase
+ASCII single words and are delivery receipts for the exact immutable thread
+only. An explicit empty receipt list is non-authorizing and equivalent to
+omission.
 Every forwarded receipt says `driver_must_revalidate=true`; the persistent
 owner remains responsible for authority, context, and current-state validation
 before acting. Questions never authorize action.
 
 `context` is a JSON object whose keys and values are strings. Its canonical
 UTF-8 JSON encoding is limited to 2048 bytes. It is included in the digest and
-forwarding prompt. Unknown request modes, unknown stored modes, and malformed
-stored conversation context fail closed.
+forwarding prompt. Telegram alerts JSON-escape each context key and value so
+context cannot add instruction lines. Unknown request modes, unknown stored
+modes, and malformed stored conversation context fail closed.
 
 ## Conversation request
 
@@ -101,10 +103,13 @@ interpolated into a shell command.
 
 Before every forward, the relay inspects the exact local Paseo owner and server
 identity and rejects missing, archived, or mismatched owners. PR receipts then
-read live GitHub PR state/head/base through fixed `gh` arguments. Conversation
-receipts perform no external domain check and therefore retain the explicit
-driver revalidation marker. The decision row is re-read after asynchronous
-checks before delivery, closing all but the final external-state race.
+read live GitHub PR state/head/base through fixed `gh` arguments. Any mismatch
+or read failure blocks forwarding. A mismatch blocks the thread; a read failure
+leaves the receipt failed and retryable without changing the open thread.
+Conversation receipts perform no external domain check and therefore retain the
+explicit driver revalidation marker. The decision row is re-read after
+asynchronous checks before delivery, closing all but the final external-state
+race.
 
 ## Storage and migration
 
@@ -119,6 +124,10 @@ Conversation rows use neutral sentinel values only in the legacy non-null PR
 columns; generic request files and messages never contain dummy PR data. Their
 `context` column holds canonical JSON containing the title, receipt list, and
 bounded context map. Mode and stored context are immutable.
+
+Ensure the decision record exists and create the outbound-attempt record before
+sending every alert or owner answer. Attach the returned message ID as a reply
+anchor only after the external platform confirms delivery.
 
 The proposal digest covers the canonical 0.2 request after demo sanitization,
 including mode, title, receipts, and context. Existing stored 0.1 digests are
@@ -158,6 +167,8 @@ the current database to force compatibility.
   its digest while making mode and context immutable.
 - Python 3.11 and the local interpreter pass the full dependency-free suite and
   compilation checks.
+- A clearly labeled demo alert reaches Telegram; a real user reply is the final
+  end-to-end check. Do not fabricate a user event as proof of phone interaction.
 
 Delivery success means the external platform returned a message ID. It does not
 prove the user read the message, and a receipt does not grant action authority.

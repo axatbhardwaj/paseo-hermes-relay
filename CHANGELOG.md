@@ -3,7 +3,7 @@
 ## 0.2.0 - 2026-09-11
 
 - Add generic `conversation` threads with required title/question, optional
-  prose, zero-to-five opt-in receipt words, and a 2048-byte canonical JSON
+  prose, zero-to-five unique opt-in receipt words, and a 2048-byte canonical JSON
   context limit.
 - Keep absent `mode` equivalent to `pr`, including the fixed PR receipt words
   and exact live state/head/base validation.
