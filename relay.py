@@ -2,9 +2,14 @@ import logging
 from dataclasses import dataclass
 
 from .adapters import AmbiguousDelivery, CommandFailure, ServerIdentityMismatch
+from .modes import (
+    PR_MODE,
+    load_stored_mode,
+    prompt_lines,
+    receipt_matches_external_state,
+)
 
 
-DECISION_WORDS = {"approve", "reject", "hold"}
 SKIP = {"action": "skip", "reason": "paseo-review-relay"}
 ATTACHMENT_FIELDS = (
     "animation",
@@ -85,7 +90,21 @@ class ReviewRelay:
         ):
             return SKIP
 
-        kind = "decision" if event.text.casefold() in DECISION_WORDS else "question"
+        try:
+            stored_mode = load_stored_mode(mapped)
+        except (TypeError, ValueError):
+            logger.exception("review relay stored mode is invalid")
+            try:
+                self.store.set_decision_status(mapped["decision_id"], "blocked")
+            except Exception:
+                logger.exception("review relay could not block invalid stored mode")
+            self._schedule_owner_ack(event, kwargs.get("gateway"))
+            return SKIP
+        kind = (
+            "decision"
+            if event.text.casefold() in stored_mode.receipts
+            else "question"
+        )
         try:
             decision, admitted = self.store.admit_receipt_for_anchor(
                 platform="telegram",
@@ -107,7 +126,9 @@ class ReviewRelay:
             coroutine = None
             try:
                 telegram = self._bound_telegram(kwargs.get("gateway"))
-                coroutine = self._forward(event, decision, kind, telegram)
+                coroutine = self._forward(
+                    event, decision, stored_mode, kind, telegram
+                )
                 self.spawn_task(coroutine)
             except Exception:
                 if coroutine is not None:
@@ -155,12 +176,15 @@ class ReviewRelay:
             or any(getattr(message, field, None) for field in ATTACHMENT_FIELDS)
         )
 
-    async def _forward(self, event, decision, kind, telegram):
+    async def _forward(self, event, decision, stored_mode, kind, telegram):
+        is_pr = stored_mode.name == PR_MODE
+        thread_name = "review request" if is_pr else "relay thread"
+        owner_name = "persistent PR owner" if is_pr else "persistent Paseo owner"
         if decision["status"] != "open":
             self.store.mark_receipt("telegram", event.source.chat_id, event.message_id, "refused")
             await telegram.send(
                 event.source.chat_id,
-                "This review request has expired; your reply was not routed.",
+                f"This {thread_name} has expired; your reply was not routed.",
                 reply_to=event.message_id,
             )
             return
@@ -171,7 +195,7 @@ class ReviewRelay:
             )
             await telegram.send(
                 event.source.chat_id,
-                "This review request belongs to a different Paseo server; your reply was not routed.",
+                f"This {thread_name} belongs to a different Paseo server; your reply was not routed.",
                 reply_to=event.message_id,
             )
             return
@@ -193,7 +217,7 @@ class ReviewRelay:
             )
             await telegram.send(
                 event.source.chat_id,
-                "Could not inspect the persistent PR owner; your reply was not routed. Reply again later to retry.",
+                f"Could not inspect the {owner_name}; your reply was not routed. Reply again later to retry.",
                 reply_to=event.message_id,
             )
             return
@@ -207,14 +231,14 @@ class ReviewRelay:
             self.store.mark_receipt("telegram", event.source.chat_id, event.message_id, "refused")
             await telegram.send(
                 event.source.chat_id,
-                "This review owner is unavailable; your reply was not routed.",
+                f"This {owner_name} is unavailable; your reply was not routed.",
                 reply_to=event.message_id,
             )
             return
         if kind == "decision":
             try:
-                live = await self.github.read_pull_request(
-                    decision["repository"], decision["pr_number"]
+                matches = await receipt_matches_external_state(
+                    decision, stored_mode, self.github
                 )
             except Exception:
                 self.store.mark_receipt(
@@ -226,11 +250,7 @@ class ReviewRelay:
                     reply_to=event.message_id,
                 )
                 return
-            if (
-                live.get("state") != "OPEN"
-                or live.get("head_sha") != decision["head_sha"]
-                or live.get("base_sha") != decision["base_sha"]
-            ):
+            if not matches:
                 self.store.set_decision_status(decision["decision_id"], "blocked")
                 self.store.mark_receipt(
                     "telegram", event.source.chat_id, event.message_id, "refused"
@@ -248,7 +268,7 @@ class ReviewRelay:
             )
             await telegram.send(
                 event.source.chat_id,
-                "This review request expired during validation; your reply was not routed.",
+                f"This {thread_name} expired during validation; your reply was not routed.",
                 reply_to=event.message_id,
             )
             return
@@ -256,11 +276,9 @@ class ReviewRelay:
         prompt = (
             "[telegram-review-relay]\n"
             f"decision_id={decision['decision_id']}\n"
+            f"mode={stored_mode.name}\n"
             f"kind={kind}\n"
-            f"repository={decision['repository']}\n"
-            f"pr={decision['pr_number']}\n"
-            f"head={decision['head_sha']}\n"
-            f"base={decision['base_sha']}\n"
+            f"{prompt_lines(decision, stored_mode)}"
             f"proposal_digest={decision['proposal_digest']}\n"
             f"{revalidation}"
             f"text:\n{event.text}"
@@ -304,6 +322,6 @@ class ReviewRelay:
         self.store.mark_receipt("telegram", event.source.chat_id, event.message_id, "forwarded")
         await telegram.send(
             event.source.chat_id,
-            "Forwarded to the persistent PR owner. This is delivery, not approval or action.",
+            f"Forwarded to the {owner_name}. This is delivery, not approval or action.",
             reply_to=event.message_id,
         )
