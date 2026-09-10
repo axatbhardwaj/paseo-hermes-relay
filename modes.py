@@ -209,7 +209,10 @@ def alert_body(request, digest):
             details.append(f"{label}: {value}")
     if request.context:
         details.append("Context:")
-        details.extend(f"- {key}: {value}" for key, value in sorted(request.context.items()))
+        details.extend(
+            f"- {canonical_json(key)}: {canonical_json(value)}"
+            for key, value in sorted(request.context.items())
+        )
     middle = "\n".join(details)
     if middle:
         middle += "\n"
