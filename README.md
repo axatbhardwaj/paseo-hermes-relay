@@ -1,5 +1,9 @@
 # paseo-hermes-relay
 
+> **Archived.** Axstack now delivers notifications one-way through Hermes'
+> native `hermes send`, so this reply-routing plugin is no longer maintained.
+> The code stays available for reference; no further releases are planned.
+
 `paseo-hermes-relay` is the standalone repository for the
 `paseo-review-relay` Hermes user plugin. The plugin routes an anchored Telegram
 reply to the exact persistent Paseo conversation owner that created the alert.
